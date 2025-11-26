@@ -149,6 +149,42 @@ exports.getListDetails = async (req, res) => {
   }
 };
 
+exports.getListContacts = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = (page - 1) * limit;
+    
+    const contactsResult = await pool.query(
+      `SELECT id, email, name, is_valid, created_at 
+       FROM list_contacts 
+       WHERE list_id = $1 
+       ORDER BY created_at DESC 
+       LIMIT $2 OFFSET $3`,
+      [id, limit, offset]
+    );
+    
+    const countResult = await pool.query(
+      'SELECT COUNT(*) as total FROM list_contacts WHERE list_id = $1',
+      [id]
+    );
+    
+    res.json({
+      contacts: contactsResult.rows,
+      pagination: {
+        page,
+        limit,
+        total: parseInt(countResult.rows[0].total),
+        totalPages: Math.ceil(countResult.rows[0].total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get list contacts error:', error);
+    res.status(500).json({ error: 'Failed to fetch list contacts' });
+  }
+};
+
 exports.deleteList = async (req, res) => {
   try {
     const { id } = req.params;

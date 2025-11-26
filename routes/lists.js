@@ -9,6 +9,7 @@ const upload = multer({ dest: 'uploads/' });
 
 router.get('/', auth, listController.getLists);
 router.get('/:id', auth, listController.getListDetails);
+router.get('/:id/contacts', auth, listController.getListContacts);
 router.post('/', auth, upload.single('file'), listController.uploadList);
 router.delete('/:id', auth, listController.deleteList);
 
