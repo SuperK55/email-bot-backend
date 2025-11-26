@@ -24,8 +24,8 @@ exports.uploadList = async (req, res) => {
     
     const listId = listResult.rows[0].id;
     
-    // Process CSV asynchronously
-    processCSV(file.path, listId);
+    // Process file asynchronously (CSV or TXT)
+    processFile(file.path, file.originalname, listId);
     
     res.status(201).json({ 
       message: 'List upload started',
@@ -39,69 +39,145 @@ exports.uploadList = async (req, res) => {
   }
 };
 
-async function processCSV(filePath, listId) {
+async function processFile(filePath, fileName, listId) {
   const contacts = [];
   let validCount = 0;
   let invalidCount = 0;
   
+  // Check if file is CSV or TXT
+  const isCSV = fileName.toLowerCase().endsWith('.csv');
+  
   return new Promise((resolve, reject) => {
-    fs.createReadStream(filePath)
-      .pipe(csv())
-      .on('data', (row) => {
-        const email = row.email || row.Email || row.EMAIL;
-        const name = row.name || row.Name || row.NAME || '';
+    if (isCSV) {
+      // Process CSV file
+      fs.createReadStream(filePath)
+        .pipe(csv())
+        .on('data', (row) => {
+          const email = row.email || row.Email || row.EMAIL;
+          const name = row.name || row.Name || row.NAME || '';
+          
+          if (email && emailRegex.test(email.trim())) {
+            contacts.push({
+              email: email.trim().toLowerCase(),
+              name: name.trim(),
+              is_valid: true
+            });
+            validCount++;
+          } else {
+            invalidCount++;
+          }
+        })
+        .on('end', () => processContacts())
+        .on('error', (error) => {
+          console.error('CSV read error:', error);
+          handleError(error);
+        });
+    } else {
+      // Process TXT file (one email per line)
+      const readline = require('readline');
+      const rl = readline.createInterface({
+        input: fs.createReadStream(filePath),
+        crlfDelay: Infinity
+      });
+      
+      rl.on('line', (line) => {
+        const trimmedLine = line.trim();
+        // Skip empty lines
+        if (!trimmedLine) return;
         
-        if (email && emailRegex.test(email.trim())) {
+        // Try to extract email from the line
+        // Could be just email, or "name,email" format, or "email,name" format
+        let email = trimmedLine;
+        let name = '';
+        
+        // Check if line contains comma (could be CSV-like format)
+        if (trimmedLine.includes(',')) {
+          const parts = trimmedLine.split(',').map(p => p.trim());
+          // Try both orders: email,name or name,email
+          if (emailRegex.test(parts[0])) {
+            email = parts[0];
+            name = parts[1] || '';
+          } else if (emailRegex.test(parts[1])) {
+            email = parts[1];
+            name = parts[0] || '';
+          }
+        }
+        
+        if (email && emailRegex.test(email)) {
           contacts.push({
-            email: email.trim().toLowerCase(),
-            name: name.trim(),
+            email: email.toLowerCase(),
+            name: name,
             is_valid: true
           });
           validCount++;
         } else {
           invalidCount++;
         }
-      })
-      .on('end', async () => {
-        try {
-          // Bulk insert contacts
-          if (contacts.length > 0) {
-            const values = contacts.map((c, i) => 
-              `(${listId}, '${c.email}', '${c.name.replace(/'/g, "''")}', ${c.is_valid})`
-            ).join(',');
-            
-            await pool.query(
-              `INSERT INTO list_contacts (list_id, email, name, is_valid) 
-               VALUES ${values}`
-            );
+      });
+      
+      rl.on('close', () => processContacts());
+      rl.on('error', (error) => {
+        console.error('TXT read error:', error);
+        handleError(error);
+      });
+    }
+    
+    async function processContacts() {
+      try {
+        // Bulk insert contacts in batches to avoid size limits
+        const batchSize = 500;
+        for (let i = 0; i < contacts.length; i += batchSize) {
+          const batch = contacts.slice(i, i + batchSize);
+          
+          // Build values array for bulk insert
+          const values = [];
+          const params = [];
+          let paramIndex = 1;
+          
+          for (const contact of batch) {
+            values.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, true)`);
+            params.push(listId, contact.email, contact.name || '');
+            paramIndex += 3;
           }
           
-          // Update list stats
+          // Execute bulk insert
           await pool.query(
-            `UPDATE email_lists 
-             SET total_count = $1, valid_count = $2, invalid_count = $3, 
-                 status = 'completed', updated_at = CURRENT_TIMESTAMP
-             WHERE id = $4`,
-            [contacts.length + invalidCount, validCount, invalidCount, listId]
+            `INSERT INTO list_contacts (list_id, email, name, is_valid) 
+             VALUES ${values.join(', ')}`,
+            params
           );
-          
-          // Delete uploaded file
-          fs.unlinkSync(filePath);
-          
-          resolve();
-        } catch (error) {
-          console.error('CSV processing error:', error);
-          await pool.query(
-            'UPDATE email_lists SET status = $1 WHERE id = $2',
-            ['failed', listId]
-          );
-          reject(error);
         }
-      })
-      .on('error', (error) => {
-        console.error('CSV read error:', error);
-        reject(error);
-      });
+        
+        // Update list stats
+        await pool.query(
+          `UPDATE email_lists 
+           SET total_count = $1, valid_count = $2, invalid_count = $3, 
+               status = 'completed', updated_at = CURRENT_TIMESTAMP
+           WHERE id = $4`,
+          [contacts.length + invalidCount, validCount, invalidCount, listId]
+        );
+        
+        // Delete uploaded file
+        fs.unlinkSync(filePath);
+        
+        resolve();
+      } catch (error) {
+        console.error('File processing error:', error);
+        handleError(error);
+      }
+    }
+    
+    async function handleError(error) {
+      try {
+        await pool.query(
+          'UPDATE email_lists SET status = $1 WHERE id = $2',
+          ['failed', listId]
+        );
+      } catch (updateError) {
+        console.error('Failed to update list status:', updateError);
+      }
+      reject(error);
+    }
   });
 }
 

@@ -29,12 +29,16 @@ function replaceVariables(content, variables) {
 // Send single email
 async function sendEmail(emailSendId, toEmail, subject, htmlContent, textContent) {
   try {
+    // Prioritize plain text content
+    const textBody = textContent || (htmlContent ? htmlContent.replace(/<[^>]*>/g, '') : '');
+    
     const mailOptions = {
       from: `${process.env.SMTP_FROM_NAME} <${process.env.SMTP_FROM_EMAIL}>`,
       to: toEmail,
       subject: subject,
-      html: htmlContent,
-      text: textContent || htmlContent.replace(/<[^>]*>/g, '')
+      text: textBody,
+      // Only include HTML if text is empty and HTML exists
+      ...(htmlContent && !textContent ? { html: htmlContent } : {})
     };
     
     const info = await transporter.sendMail(mailOptions);
@@ -104,7 +108,7 @@ async function processPendingEmails() {
     );
     
     const emailsToSend = await pool.query(
-      `SELECT es.id, es.email, es.campaign_id, c.template_id
+      `SELECT es.id, es.email, es.campaign_id, es.contact_id, c.template_id
        FROM email_sends es
        JOIN campaigns c ON es.campaign_id = c.id
        WHERE es.status = 'pending' AND c.status = 'active'
@@ -130,13 +134,37 @@ async function processPendingEmails() {
       
       const template = templateResult.rows[0];
       
+      // Get contact information for variable replacement
+      let contactInfo = { email: email.email, nome: '', empresa: '' };
+      if (email.contact_id) {
+        const contactResult = await pool.query(
+          'SELECT email, name FROM list_contacts WHERE id = $1',
+          [email.contact_id]
+        );
+        if (contactResult.rows.length > 0) {
+          const contact = contactResult.rows[0];
+          contactInfo = {
+            email: contact.email,
+            nome: contact.name || contact.email.split('@')[0],
+            empresa: contact.email.split('@')[1]?.split('.')[0] || ''
+          };
+        }
+      }
+      
+      // Replace variables in subject and content
+      const templateVariables = template.variables ? JSON.parse(template.variables) : {};
+      const allVariables = { ...templateVariables, ...contactInfo };
+      const subject = replaceVariables(template.subject, allVariables);
+      const textContent = replaceVariables(template.text_content || '', allVariables);
+      const htmlContent = template.html_content ? replaceVariables(template.html_content, allVariables) : '';
+      
       // Send email
       const result = await sendEmail(
         email.id,
         email.email,
-        template.subject,
-        template.html_content,
-        template.text_content
+        subject,
+        htmlContent,
+        textContent
       );
       
       if (result.success) {
