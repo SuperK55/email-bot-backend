@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const { processAllPendingEmails } = require('../services/scheduler');
 
 exports.createCampaign = async (req, res) => {
   try {
@@ -115,15 +116,22 @@ exports.startCampaign = async (req, res) => {
       [campaign.list_id]
     );
     
-    // Create email send entries
-    const values = contactsResult.rows.map(c => 
-      `(${id}, ${c.id}, '${c.email}', 'pending')`
-    ).join(',');
-    
-    if (values) {
+    // Create email send entries using parameterized queries
+    if (contactsResult.rows.length > 0) {
+      const values = [];
+      const params = [];
+      let paramIndex = 1;
+      
+      for (const contact of contactsResult.rows) {
+        values.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, 'pending')`);
+        params.push(id, contact.id, contact.email);
+        paramIndex += 3;
+      }
+      
       await pool.query(
         `INSERT INTO email_sends (campaign_id, contact_id, email, status) 
-         VALUES ${values}`
+         VALUES ${values.join(', ')}`,
+        params
       );
     }
     
@@ -134,6 +142,10 @@ exports.startCampaign = async (req, res) => {
        WHERE id = $1`,
       [id]
     );
+    
+    processAllPendingEmails().catch(err => {
+      console.error('Error processing emails after campaign start:', err);
+    });
     
     res.json({ message: 'Campaign started successfully' });
   } catch (error) {
@@ -166,6 +178,10 @@ exports.resumeCampaign = async (req, res) => {
       `UPDATE campaigns SET status = 'active' WHERE id = $1`,
       [id]
     );
+    
+    processAllPendingEmails().catch(err => {
+      console.error('Error processing emails after campaign resume:', err);
+    });
     
     res.json({ message: 'Campaign resumed successfully' });
   } catch (error) {
