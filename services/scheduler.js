@@ -14,8 +14,15 @@ async function processAllPendingEmails() {
   let totalFailed = 0;
   
   try {
+    console.log('Starting email processing...');
+    
     while (true) {
       const result = await processPendingEmails();
+      
+      if (result.error) {
+        console.error('Error processing emails:', result.error);
+        break;
+      }
       
       totalSent += result.sent;
       totalFailed += result.failed;
@@ -26,6 +33,7 @@ async function processAllPendingEmails() {
       }
       
       if (result.sent === 0 && result.failed === 0) {
+        console.log('No pending emails to process.');
         break;
       }
       
@@ -36,7 +44,11 @@ async function processAllPendingEmails() {
     
     if (totalSent > 0 || totalFailed > 0) {
       console.log(`Processing complete - Total Sent: ${totalSent}, Total Failed: ${totalFailed}`);
+    } else {
+      console.log('No emails were processed.');
     }
+  } catch (error) {
+    console.error('Error in processAllPendingEmails:', error);
   } finally {
     isProcessing = false;
   }

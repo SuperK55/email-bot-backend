@@ -128,11 +128,14 @@ exports.startCampaign = async (req, res) => {
         paramIndex += 3;
       }
       
-      await pool.query(
+      const insertResult = await pool.query(
         `INSERT INTO email_sends (campaign_id, contact_id, email, status) 
          VALUES ${values.join(', ')}`,
         params
       );
+      console.log(`Created ${contactsResult.rows.length} email_sends entries for campaign ${id}`);
+    } else {
+      console.log(`No valid contacts found for campaign ${id}`);
     }
     
     // Update campaign status
@@ -143,6 +146,7 @@ exports.startCampaign = async (req, res) => {
       [id]
     );
     
+    console.log('Triggering email processing after campaign start...');
     processAllPendingEmails().catch(err => {
       console.error('Error processing emails after campaign start:', err);
     });
@@ -179,6 +183,7 @@ exports.resumeCampaign = async (req, res) => {
       [id]
     );
     
+    console.log('Triggering email processing after campaign resume...');
     processAllPendingEmails().catch(err => {
       console.error('Error processing emails after campaign resume:', err);
     });

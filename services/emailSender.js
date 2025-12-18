@@ -117,6 +117,19 @@ async function processPendingEmails() {
       [batchSize]
     );
     
+    console.log(`Found ${emailsToSend.rows.length} pending emails to process (batch size: ${batchSize})`);
+    
+    if (emailsToSend.rows.length === 0) {
+      console.log('No pending emails found. Checking for active campaigns...');
+      const activeCheck = await pool.query(
+        `SELECT COUNT(*) as count FROM campaigns WHERE status = 'active'`
+      );
+      const pendingCheck = await pool.query(
+        `SELECT COUNT(*) as count FROM email_sends WHERE status = 'pending'`
+      );
+      console.log(`Active campaigns: ${activeCheck.rows[0].count}, Pending emails: ${pendingCheck.rows[0].count}`);
+    }
+    
     let sent = 0;
     let failed = 0;
     
@@ -135,7 +148,12 @@ async function processPendingEmails() {
       const template = templateResult.rows[0];
       
       // Get contact information for variable replacement
-      let contactInfo = { email: email.email, nome: '', empresa: '' };
+      let contactInfo = { 
+        email: email.email, 
+        nome: email.email.split('@')[0], 
+        empresa: email.email.split('@')[1]?.split('.')[0] || '' 
+      };
+      
       if (email.contact_id) {
         const contactResult = await pool.query(
           'SELECT email, name FROM list_contacts WHERE id = $1',
@@ -145,14 +163,24 @@ async function processPendingEmails() {
           const contact = contactResult.rows[0];
           contactInfo = {
             email: contact.email,
-            nome: contact.name || contact.email.split('@')[0],
+            nome: contact.name && contact.name.trim() ? contact.name.trim() : contact.email.split('@')[0],
             empresa: contact.email.split('@')[1]?.split('.')[0] || ''
           };
         }
       }
       
       // Replace variables in subject and content
-      const templateVariables = template.variables ? JSON.parse(template.variables) : {};
+      let templateVariables = {};
+      if (template.variables) {
+        try {
+          templateVariables = typeof template.variables === 'string' 
+            ? JSON.parse(template.variables) 
+            : template.variables;
+        } catch (e) {
+          console.error('Error parsing template variables:', e, 'Raw value:', template.variables);
+          templateVariables = {};
+        }
+      }
       const allVariables = { ...templateVariables, ...contactInfo };
       const subject = replaceVariables(template.subject, allVariables);
       const textContent = replaceVariables(template.text_content || '', allVariables);
